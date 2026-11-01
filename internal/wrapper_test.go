@@ -19,7 +19,9 @@ package internal
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 
@@ -38,27 +40,34 @@ func TestReloadedOptions(t *testing.T) {
 
 	base := options.NewOptions()
 	base.Config = configPath
-	base.CustomResourceConfigFile = "/etc/ksm/from-flag.yaml"
+	base.CustomResourceConfigFile = options.FileList{"/etc/ksm/from-flag.yaml"}
 	base.Kubeconfig = "/etc/ksm/kubeconfig-from-flag"
 
 	tests := []struct {
 		name           string
 		config         string
-		wantCRC        string
+		wantCRC        options.FileList
 		wantKubeconfig string
 		wantOK         bool
 	}{
 		{
 			name:           "config file overrides the flags",
 			config:         "custom_resource_state_config_file: /etc/ksm/from-config.yaml\nkubeconfig: /etc/ksm/kubeconfig-from-config\n",
-			wantCRC:        "/etc/ksm/from-config.yaml",
+			wantCRC:        options.FileList{"/etc/ksm/from-config.yaml"},
 			wantKubeconfig: "/etc/ksm/kubeconfig-from-config",
 			wantOK:         true,
 		},
 		{
 			name:           "override removed falls back to the flags",
 			config:         "port: 8080\n",
-			wantCRC:        "/etc/ksm/from-flag.yaml",
+			wantCRC:        options.FileList{"/etc/ksm/from-flag.yaml"},
+			wantKubeconfig: "/etc/ksm/kubeconfig-from-flag",
+			wantOK:         true,
+		},
+		{
+			name:           "config file sets several custom resource config files",
+			config:         "custom_resource_state_config_file: [/etc/ksm/team-a.yaml, /etc/ksm/team-b.yaml]\n",
+			wantCRC:        options.FileList{"/etc/ksm/team-a.yaml", "/etc/ksm/team-b.yaml"},
 			wantKubeconfig: "/etc/ksm/kubeconfig-from-flag",
 			wantOK:         true,
 		},
@@ -74,12 +83,12 @@ func TestReloadedOptions(t *testing.T) {
 			if !ok {
 				return
 			}
-			if got.CustomResourceConfigFile != tt.wantCRC || got.Kubeconfig != tt.wantKubeconfig {
+			if !slices.Equal(got.CustomResourceConfigFile, tt.wantCRC) || got.Kubeconfig != tt.wantKubeconfig {
 				t.Errorf("got (%q, %q), want (%q, %q)", got.CustomResourceConfigFile, got.Kubeconfig, tt.wantCRC, tt.wantKubeconfig)
 			}
 		})
 	}
-	if base.CustomResourceConfigFile != "/etc/ksm/from-flag.yaml" || base.Kubeconfig != "/etc/ksm/kubeconfig-from-flag" {
+	if !slices.Equal(base.CustomResourceConfigFile, options.FileList{"/etc/ksm/from-flag.yaml"}) || base.Kubeconfig != "/etc/ksm/kubeconfig-from-flag" {
 		t.Errorf("the base options must not change, got (%q, %q)", base.CustomResourceConfigFile, base.Kubeconfig)
 	}
 
@@ -87,7 +96,7 @@ func TestReloadedOptions(t *testing.T) {
 		noFlag := options.NewOptions()
 		noFlag.Config = configPath
 		writeConfig("custom_resource_config_file: /etc/ksm/deprecated.yaml\n")
-		if got, ok := reloadedOptions(noFlag); !ok || got.CustomResourceConfigFile != "/etc/ksm/deprecated.yaml" {
+		if got, ok := reloadedOptions(noFlag); !ok || !slices.Equal(got.CustomResourceConfigFile, options.FileList{"/etc/ksm/deprecated.yaml"}) {
 			t.Errorf("expected the deprecated key's file, got %v", got)
 		}
 	})
@@ -106,10 +115,10 @@ func TestMovableWatch(t *testing.T) {
 	events := make(chan fsnotify.Event, 16)
 	onChange := func(e fsnotify.Event) { events <- e }
 	w := &movableWatch{name: "test file"}
-	t.Cleanup(func() { w.watch("", onChange) })
+	t.Cleanup(func() { w.watch(onChange) })
 
-	w.watch(first, onChange)
-	w.watch(second, onChange)
+	w.watch(onChange, first)
+	w.watch(onChange, second)
 
 	if err := os.WriteFile(first, []byte("a: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -120,4 +129,42 @@ func TestMovableWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectEvent(t, events)
+}
+
+func TestMovableWatchSeveralFiles(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.yaml")
+	second := filepath.Join(dir, "second.yaml")
+	for _, f := range []string{first, second} {
+		if err := os.WriteFile(f, []byte("a: 1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	events := make(chan fsnotify.Event, 16)
+	onChange := func(e fsnotify.Event) { events <- e }
+	w := &movableWatch{name: "test file"}
+	t.Cleanup(func() { w.watch(onChange) })
+
+	w.watch(onChange, first, "", second)
+	for _, f := range []string{first, second} {
+		if err := os.WriteFile(f, []byte("a: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		expectEvent(t, events)
+		// A single write can be reported more than once.
+		for drained := false; !drained; {
+			select {
+			case <-events:
+			case <-time.After(200 * time.Millisecond):
+				drained = true
+			}
+		}
+	}
+
+	w.watch(onChange, second)
+	if err := os.WriteFile(first, []byte("a: 3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expectNoEvent(t, events)
 }

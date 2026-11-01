@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -51,7 +52,7 @@ func RunKubeStateMetricsWrapper(opts *options.Options) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// The custom resource config file and the kubeconfig can be set by the
+	// The custom resource config files and the kubeconfig can be set by the
 	// options config file, so the files in effect can change with each reload.
 	var restart func(fsnotify.Event)
 	crcWatch := &movableWatch{name: "Custom resource configuration file"}
@@ -73,8 +74,8 @@ func RunKubeStateMetricsWrapper(opts *options.Options) {
 		// that cannot be read keeps the current watchers; the run waits for it
 		// to be fixed and the fix triggers another restart.
 		if next, ok := reloadedOptions(baseOpts); ok {
-			crcWatch.watch(next.CustomResourceConfigFile, restart)
-			kubeconfigWatch.watch(next.Kubeconfig, restart)
+			crcWatch.watch(restart, next.CustomResourceConfigFile...)
+			kubeconfigWatch.watch(restart, next.Kubeconfig)
 		}
 		cancel()
 		// Wait for the ports to be released.
@@ -102,28 +103,30 @@ func RunKubeStateMetricsWrapper(opts *options.Options) {
 			// TODO: Remove deprecated custom_resource_config_file support in KSM 2.21.
 		} else if opts.CustomResourceConfigFileDeprecated != "" {
 			klog.Warning("The 'custom_resource_config_file' config key is deprecated and will be removed in a future release; use 'custom_resource_state_config_file' instead")
-			if opts.CustomResourceConfigFile == "" {
-				opts.CustomResourceConfigFile = opts.CustomResourceConfigFileDeprecated
+			if len(opts.CustomResourceConfigFile) == 0 {
+				opts.CustomResourceConfigFile = options.FileList{opts.CustomResourceConfigFileDeprecated}
 			}
 		}
 		if _, err := watchFile(file, restart); err != nil {
 			klog.ErrorS(err, "Failed to watch options configuration file", "file", file)
 		}
 	}
-	if opts.CustomResourceConfigFile != "" {
-		if err := readYAMLFile(opts.CustomResourceConfigFile); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				klog.ErrorS(err, "Custom resource configuration file not found at startup", "file", opts.CustomResourceConfigFile)
-			} else {
-				klog.ErrorS(err, "Error reading Custom resource configuration file", "file", opts.CustomResourceConfigFile)
-			}
-			if !opts.ContinueWithoutCustomResourceConfigFile {
-				klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	if len(opts.CustomResourceConfigFile) > 0 {
+		for _, file := range opts.CustomResourceConfigFile {
+			if err := readYAMLFile(file); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					klog.ErrorS(err, "Custom resource configuration file not found at startup", "file", file)
+				} else {
+					klog.ErrorS(err, "Error reading Custom resource configuration file", "file", file)
+				}
+				if !opts.ContinueWithoutCustomResourceConfigFile {
+					klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+				}
 			}
 		}
 		// The options file watcher is already running and may restart first.
 		reloadMu.Lock()
-		crcWatch.watch(opts.CustomResourceConfigFile, restart)
+		crcWatch.watch(restart, opts.CustomResourceConfigFile...)
 		reloadMu.Unlock()
 	}
 	if opts.Kubeconfig != "" {
@@ -136,7 +139,7 @@ func RunKubeStateMetricsWrapper(opts *options.Options) {
 			klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 		}
 		reloadMu.Lock()
-		kubeconfigWatch.watch(opts.Kubeconfig, restart)
+		kubeconfigWatch.watch(restart, opts.Kubeconfig)
 		reloadMu.Unlock()
 	}
 	klog.InfoS("Starting kube-state-metrics")
@@ -144,33 +147,33 @@ func RunKubeStateMetricsWrapper(opts *options.Options) {
 	select {}
 }
 
-// movableWatch watches one file whose path can change between runs.
+// movableWatch watches a set of files whose paths can change between runs.
 type movableWatch struct {
-	name string
-	file string
-	stop func()
+	name  string
+	files []string
+	stops []func()
 }
 
-// watch moves the watch to file, unless it already follows it. An empty file
-// stops the watch.
-func (w *movableWatch) watch(file string, onChange func(fsnotify.Event)) {
-	if file == w.file {
+// watch moves the watch to files, unless it already follows them. Empty paths
+// are skipped, so no paths stop the watch.
+func (w *movableWatch) watch(onChange func(fsnotify.Event), files ...string) {
+	files = slices.DeleteFunc(slices.Clone(files), func(file string) bool { return file == "" })
+	if slices.Equal(files, w.files) {
 		return
 	}
-	if w.stop != nil {
-		w.stop()
-		w.stop = nil
+	for _, stop := range w.stops {
+		stop()
 	}
-	w.file = file
-	if file == "" {
-		return
+	w.stops = nil
+	w.files = files
+	for _, file := range files {
+		stop, err := watchFile(file, onChange)
+		if err != nil {
+			klog.ErrorS(err, "Failed to watch "+w.name, "file", file)
+			continue
+		}
+		w.stops = append(w.stops, stop)
 	}
-	stop, err := watchFile(file, onChange)
-	if err != nil {
-		klog.ErrorS(err, "Failed to watch "+w.name, "file", file)
-		return
-	}
-	w.stop = stop
 }
 
 // reloadedOptions returns the options a run starting from baseOpts uses, with
@@ -188,8 +191,8 @@ func reloadedOptions(baseOpts *options.Options) (*options.Options, bool) {
 		}
 	}
 	// TODO: Remove deprecated custom_resource_config_file support in KSM 2.21.
-	if opts.CustomResourceConfigFile == "" {
-		opts.CustomResourceConfigFile = opts.CustomResourceConfigFileDeprecated
+	if len(opts.CustomResourceConfigFile) == 0 && opts.CustomResourceConfigFileDeprecated != "" {
+		opts.CustomResourceConfigFile = options.FileList{opts.CustomResourceConfigFileDeprecated}
 	}
 	return opts, true
 }

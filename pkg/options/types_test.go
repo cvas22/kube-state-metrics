@@ -561,3 +561,58 @@ func TestLabelsAllowListUnmarshalYAML(t *testing.T) {
 		}
 	}
 }
+
+func TestFileListSet(t *testing.T) {
+	files := &FileList{}
+	for _, value := range []string{"/etc/ksm/a.yaml", "/etc/ksm/b.yaml, /etc/ksm/c.yaml", ""} {
+		if err := files.Set(value); err != nil {
+			t.Fatalf("Set(%q): %v", value, err)
+		}
+	}
+	want := FileList{"/etc/ksm/a.yaml", "/etc/ksm/b.yaml", "/etc/ksm/c.yaml"}
+	if !reflect.DeepEqual(*files, want) {
+		t.Errorf("want %v, got %v", want, *files)
+	}
+	if got := files.String(); got != "/etc/ksm/a.yaml,/etc/ksm/b.yaml,/etc/ksm/c.yaml" {
+		t.Errorf("unexpected String(): %q", got)
+	}
+}
+
+func TestFileListUnmarshalYAML(t *testing.T) {
+	tests := []struct {
+		Desc   string
+		YAML   string
+		Wanted FileList
+	}{
+		{
+			Desc:   "single path",
+			YAML:   "files: /etc/ksm/a.yaml\n",
+			Wanted: FileList{"/etc/ksm/a.yaml"},
+		},
+		{
+			Desc:   "list of paths",
+			YAML:   "files: [/etc/ksm/a.yaml, /etc/ksm/b.yaml]\n",
+			Wanted: FileList{"/etc/ksm/a.yaml", "/etc/ksm/b.yaml"},
+		},
+		{
+			Desc:   "empty path",
+			YAML:   "files: \"\"\n",
+			Wanted: nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.Desc, func(t *testing.T) {
+			// The value from the YAML file replaces the one set before, e.g. from the command line.
+			config := struct {
+				Files FileList `yaml:"files"`
+			}{Files: FileList{"/etc/ksm/from-flag.yaml"}}
+			if err := yaml.Unmarshal([]byte(test.YAML), &config); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(config.Files, test.Wanted) {
+				t.Errorf("want %v, got %v", test.Wanted, config.Files)
+			}
+		})
+	}
+}

@@ -1236,7 +1236,7 @@ spec:
 		}
 
 		opts := options.NewOptions()
-		opts.CustomResourceConfigFile = f.Name()
+		opts.CustomResourceConfigFile = options.FileList{f.Name()}
 		opts.ContinueWithoutCustomResourceConfigFile = false
 
 		decoder, err := resolveCustomResourceConfig(opts)
@@ -1262,7 +1262,7 @@ spec:
 		}
 
 		opts := options.NewOptions()
-		opts.CustomResourceConfigFile = f.Name()
+		opts.CustomResourceConfigFile = options.FileList{f.Name()}
 		opts.ContinueWithoutCustomResourceConfigFile = true
 
 		decoder, err := resolveCustomResourceConfig(opts)
@@ -1277,7 +1277,7 @@ spec:
 
 	t.Run("file absent, flag set: returns nil without error", func(t *testing.T) {
 		opts := options.NewOptions()
-		opts.CustomResourceConfigFile = filepath.Join(t.TempDir(), "missing.yaml")
+		opts.CustomResourceConfigFile = options.FileList{filepath.Join(t.TempDir(), "missing.yaml")}
 		opts.ContinueWithoutCustomResourceConfigFile = true
 
 		decoder, err := resolveCustomResourceConfig(opts)
@@ -1291,7 +1291,7 @@ spec:
 
 	t.Run("file absent, flag not set: returns error", func(t *testing.T) {
 		opts := options.NewOptions()
-		opts.CustomResourceConfigFile = filepath.Join(t.TempDir(), "missing.yaml")
+		opts.CustomResourceConfigFile = options.FileList{filepath.Join(t.TempDir(), "missing.yaml")}
 		opts.ContinueWithoutCustomResourceConfigFile = false
 
 		decoder, err := resolveCustomResourceConfig(opts)
@@ -1300,6 +1300,82 @@ spec:
 		}
 		if decoder != nil {
 			t.Fatal("expected nil decoder on error")
+		}
+	})
+
+	writeCRSConfig := func(t *testing.T, dir, kind string) string {
+		t.Helper()
+		file := filepath.Join(dir, strings.ToLower(kind)+".yaml")
+		if err := os.WriteFile(file, []byte(strings.ReplaceAll(validCRSConfig, "MyResource", kind)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return file
+	}
+
+	t.Run("multiple files: merges the resources in order", func(t *testing.T) {
+		dir := t.TempDir()
+		opts := options.NewOptions()
+		opts.CustomResourceConfigFile = options.FileList{writeCRSConfig(t, dir, "First"), writeCRSConfig(t, dir, "Second")}
+
+		decoder, err := resolveCustomResourceConfig(opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var config customresourcestate.Metrics
+		if err := decoder.Decode(&config); err != nil {
+			t.Fatalf("failed to decode CRS config: %v", err)
+		}
+		var kinds []string
+		for _, resource := range config.Spec.Resources {
+			kinds = append(kinds, resource.GroupVersionKind.Kind)
+		}
+		if !slices.Equal(kinds, []string{"First", "Second"}) {
+			t.Fatalf("expected the resources of both files in order, got %v", kinds)
+		}
+	})
+
+	t.Run("multiple files, one absent, flag set: loads the others", func(t *testing.T) {
+		dir := t.TempDir()
+		opts := options.NewOptions()
+		opts.CustomResourceConfigFile = options.FileList{filepath.Join(dir, "missing.yaml"), writeCRSConfig(t, dir, "MyResource")}
+		opts.ContinueWithoutCustomResourceConfigFile = true
+
+		decoder, err := resolveCustomResourceConfig(opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if decoder == nil {
+			t.Fatal("expected a decoder, got nil")
+		}
+		assertDecodesConfig(t, decoder)
+	})
+
+	t.Run("multiple files, one absent, flag not set: returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		opts := options.NewOptions()
+		opts.CustomResourceConfigFile = options.FileList{writeCRSConfig(t, dir, "MyResource"), filepath.Join(dir, "missing.yaml")}
+
+		if _, err := resolveCustomResourceConfig(opts); err == nil {
+			t.Fatal("expected an error when a file is absent and flag is not set")
+		}
+	})
+
+	t.Run("multiple files, one invalid: error names the file", func(t *testing.T) {
+		dir := t.TempDir()
+		invalid := filepath.Join(dir, "invalid.yaml")
+		if err := os.WriteFile(invalid, []byte("spec: [unclosed"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		opts := options.NewOptions()
+		opts.CustomResourceConfigFile = options.FileList{writeCRSConfig(t, dir, "MyResource"), invalid}
+
+		decoder, err := resolveCustomResourceConfig(opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var config customresourcestate.Metrics
+		if err := decoder.Decode(&config); err == nil || !strings.Contains(err.Error(), invalid) {
+			t.Fatalf("expected a decode error naming %s, got %v", invalid, err)
 		}
 	})
 }
@@ -1329,14 +1405,14 @@ func TestConfigReloadStartsFromBaseline(t *testing.T) {
 	if len(first.AnnotationsAllowList["secrets"]) != 1 || !slices.Equal(first.Namespaces, []string{"team-a"}) {
 		t.Fatalf("expected config values to be applied, got annotations=%v namespaces=%v", first.AnnotationsAllowList, first.Namespaces)
 	}
-	if first.CustomResourceConfigFile != filepath.Join(dir, "crs.yaml") {
+	if !slices.Equal(first.CustomResourceConfigFile, options.FileList{filepath.Join(dir, "crs.yaml")}) {
 		t.Fatalf("expected deprecated custom_resource_config_file to be honored, got %q", first.CustomResourceConfigFile)
 	}
 
 	writeConfig("enable_gzip_encoding: true\n")
 	second := base.Clone()
 	_ = RunKubeStateMetricsWrapper(context.Background(), second)
-	if len(second.AnnotationsAllowList) != 0 || len(second.Namespaces) != 0 || second.CustomResourceConfigFile != "" {
+	if len(second.AnnotationsAllowList) != 0 || len(second.Namespaces) != 0 || len(second.CustomResourceConfigFile) != 0 {
 		t.Fatalf("expected removed keys to fall back to command line values, got annotations=%v namespaces=%v crs=%q", second.AnnotationsAllowList, second.Namespaces, second.CustomResourceConfigFile)
 	}
 	if len(base.AnnotationsAllowList) != 0 || len(base.Namespaces) != 0 {

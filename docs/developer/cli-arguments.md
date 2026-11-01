@@ -48,7 +48,7 @@ Flags:
       --continue-without-config                              If true, kube-state-metrics continues to run even if the config file specified by --config is not present. This is useful for scenarios where config file is not provided at startup but is provided later, for e.g., via configmap. Kube-state-metrics will not exit with an error if the config file is not found, instead watches and reloads when it is created.
       --continue-without-custom-resource-state-config-file   If true, Kube-state-metrics continues to run even if the config file specified by --custom-resource-state-config-file is not present. This is useful for scenarios where config file is not provided at startup but is provided later, for e.g., via configmap. Kube-state-metrics will not exit with an error if the custom-resource-state-config file is not found, instead watches and reloads when it is created.
       --custom-resource-state-config string                  Inline Custom Resource State Metrics config YAML (experimental)
-      --custom-resource-state-config-file string             Path to a Custom Resource State Metrics config file (experimental)
+      --custom-resource-state-config-file string             Path to a Custom Resource State Metrics config file (experimental). Repeat the flag or pass a comma-separated list to load several files; the resources from all files are merged.
       --custom-resource-state-only                           Only provide Custom Resource State metrics (experimental)
       --enable-gzip-encoding                                 Gzip responses when requested by clients via 'Accept-Encoding: gzip' header.
   -h, --help                                                 Print Help text

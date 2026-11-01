@@ -329,3 +329,51 @@ func (l *LabelsAllowList) String() string {
 func (l *LabelsAllowList) Type() string {
 	return "string"
 }
+
+// FileList represents a list of file paths.
+type FileList []string
+
+func (f *FileList) String() string {
+	return strings.Join(*f, ",")
+}
+
+// Set converts a comma-separated string of file paths into a slice and appends it to the FileList, so the flag can be
+// repeated.
+func (f *FileList) Set(value string) error {
+	for file := range strings.SplitSeq(value, ",") {
+		file = strings.TrimSpace(file)
+		if len(file) != 0 {
+			*f = append(*f, file)
+		}
+	}
+	return nil
+}
+
+// Type returns a descriptive string about the FileList type.
+func (f *FileList) Type() string {
+	return "string"
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler so that a YAML config file can set either a single path or a list of
+// paths. Either way, the value replaces the paths set before.
+func (f *FileList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var file string
+		if err := value.Decode(&file); err != nil {
+			return err
+		}
+		*f = nil
+		return f.Set(file)
+	}
+	var files []string
+	if err := value.Decode(&files); err != nil {
+		return err
+	}
+	*f = nil
+	for _, file := range files {
+		if err := f.Set(file); err != nil {
+			return err
+		}
+	}
+	return nil
+}

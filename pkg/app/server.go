@@ -195,18 +195,18 @@ func RunKubeStateMetrics(ctx context.Context, opts *options.Options) error {
 		return err
 	}
 
-	if opts.CustomResourceConfigFile != "" {
-		if _, err := os.Stat(filepath.Clean(opts.CustomResourceConfigFile)); err != nil {
-			klog.ErrorS(err, "encountered error while processing the file", "file", opts.CustomResourceConfigFile)
+	for _, file := range opts.CustomResourceConfigFile {
+		if _, err := os.Stat(filepath.Clean(file)); err != nil {
+			klog.ErrorS(err, "encountered error while processing the file", "file", file)
 		} else {
-			crcFile, err := os.ReadFile(filepath.Clean(opts.CustomResourceConfigFile))
+			crcFile, err := os.ReadFile(filepath.Clean(file))
 			if err != nil {
 				return fmt.Errorf("failed to read custom resource config file: %w", err)
 			}
-			configSuccess.WithLabelValues("customresourceconfig", filepath.Clean(opts.CustomResourceConfigFile)).Set(1)
-			configSuccessTime.WithLabelValues("customresourceconfig", filepath.Clean(opts.CustomResourceConfigFile)).SetToCurrentTime()
+			configSuccess.WithLabelValues("customresourceconfig", filepath.Clean(file)).Set(1)
+			configSuccessTime.WithLabelValues("customresourceconfig", filepath.Clean(file)).SetToCurrentTime()
 			hash := md5HashAsMetricValue(crcFile)
-			configHash.WithLabelValues("customresourceconfig", filepath.Clean(opts.CustomResourceConfigFile)).Set(hash)
+			configHash.WithLabelValues("customresourceconfig", filepath.Clean(file)).Set(hash)
 		}
 	}
 
@@ -458,8 +458,8 @@ func configureResourcesAndMetrics(opts *options.Options, configFile []byte) *opt
 	}
 
 	// TODO: Remove deprecated custom_resource_config_file support in KSM 2.21.
-	if opts.CustomResourceConfigFile == "" && opts.CustomResourceConfigFileDeprecated != "" {
-		opts.CustomResourceConfigFile = opts.CustomResourceConfigFileDeprecated
+	if len(opts.CustomResourceConfigFile) == 0 && opts.CustomResourceConfigFileDeprecated != "" {
+		opts.CustomResourceConfigFile = options.FileList{opts.CustomResourceConfigFileDeprecated}
 	}
 	return opts
 }
@@ -660,16 +660,50 @@ func resolveCustomResourceConfig(opts *options.Options) (customresourcestate.Con
 	if s := opts.CustomResourceConfig; s != "" {
 		return yaml.NewDecoder(strings.NewReader(s)), nil
 	}
-	if file := opts.CustomResourceConfigFile; file != "" {
+	var decoders multiFileDecoder
+	for _, file := range opts.CustomResourceConfigFile {
 		data, err := os.ReadFile(filepath.Clean(file))
 		if err != nil {
 			if opts.ContinueWithoutCustomResourceConfigFile && os.IsNotExist(err) {
 				klog.Warningf("Failed to open Custom Resource State Metrics file %s: %v, ignoring", file, err)
-				return nil, nil
+				continue
 			}
 			return nil, fmt.Errorf("unable to open Custom Resource State Metrics file: %w", err)
 		}
-		return yaml.NewDecoder(bytes.NewReader(data)), nil
+		decoders = append(decoders, fileDecoder{file: file, decoder: yaml.NewDecoder(bytes.NewReader(data))})
 	}
-	return nil, nil
+	switch len(decoders) {
+	case 0:
+		return nil, nil
+	case 1:
+		return decoders[0].decoder, nil
+	default:
+		return decoders, nil
+	}
+}
+
+// fileDecoder decodes one Custom Resource State Metrics config file.
+type fileDecoder struct {
+	file    string
+	decoder customresourcestate.ConfigDecoder
+}
+
+// multiFileDecoder decodes several Custom Resource State Metrics config files
+// into one config, which has the resources of all files in the order the files
+// are given.
+type multiFileDecoder []fileDecoder
+
+func (d multiFileDecoder) Decode(v any) error {
+	config, ok := v.(*customresourcestate.Metrics)
+	if !ok {
+		return fmt.Errorf("cannot decode multiple Custom Resource State Metrics files into %T", v)
+	}
+	for _, f := range d {
+		var fileConfig customresourcestate.Metrics
+		if err := f.decoder.Decode(&fileConfig); err != nil {
+			return fmt.Errorf("%s: %w", f.file, err)
+		}
+		config.Spec.Resources = append(config.Spec.Resources, fileConfig.Spec.Resources...)
+	}
+	return nil
 }

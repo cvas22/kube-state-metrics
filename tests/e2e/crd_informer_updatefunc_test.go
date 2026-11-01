@@ -68,7 +68,7 @@ func TestCRDInformerUpdateFuncHandler(t *testing.T) {
 	opts.AddFlags(cmd)
 	klog.InfoS("options", "options", opts)
 
-	opts.CustomResourceConfigFile = m.crsConfig
+	opts.CustomResourceConfigFile = options.FileList{m.crsConfig}
 	kubeconfig, found := os.LookupEnv("KUBECONFIG")
 	if !found {
 		t.Fatalf("KUBECONFIG environment variable not set")

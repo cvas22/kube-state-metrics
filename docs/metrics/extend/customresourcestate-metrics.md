@@ -17,6 +17,11 @@ Two flags can be used:
 
 When using a `--config` file, the equivalent YAML key is `custom_resource_state_config_file`. The pre-v2.17 key `custom_resource_config_file` is still honored as a deprecated alias and will be removed in a future release; please migrate to `custom_resource_state_config_file`.
 
+`--custom-resource-state-config-file` can be repeated, or given a comma-separated list, to load several files, e.g. one
+ConfigMap per team. The resources of all files are merged in the order the files are given, and kube-state-metrics
+reloads when any of them changes. In a `--config` file, `custom_resource_state_config_file` takes either a single path or
+a list of paths.
+
 If both flags are provided, the inline configuration will take precedence.
 When multiple entries for the same resource exist, kube-state-metrics will exit with an error.
 This includes configuration which refers to a different API version.

@@ -21,6 +21,7 @@ import (
 	"math"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -125,7 +126,7 @@ func TestCustomResourceConfigFileDeprecatedAlias(t *testing.T) {
 		if opts.CustomResourceConfigFileDeprecated != "/etc/ksm/crs.yaml" {
 			t.Fatalf("expected deprecated alias to be set, got %q", opts.CustomResourceConfigFileDeprecated)
 		}
-		if opts.CustomResourceConfigFile != "" {
+		if len(opts.CustomResourceConfigFile) != 0 {
 			t.Fatalf("expected canonical field to remain empty pre-merge, got %q", opts.CustomResourceConfigFile)
 		}
 	})
@@ -136,7 +137,7 @@ func TestCustomResourceConfigFileDeprecatedAlias(t *testing.T) {
 		if err := yaml.Unmarshal([]byte(yamlIn), opts); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		if opts.CustomResourceConfigFile != "/new.yaml" {
+		if !slices.Equal(opts.CustomResourceConfigFile, FileList{"/new.yaml"}) {
 			t.Fatalf("expected canonical field to win, got %q", opts.CustomResourceConfigFile)
 		}
 		if opts.CustomResourceConfigFileDeprecated != "/old.yaml" {

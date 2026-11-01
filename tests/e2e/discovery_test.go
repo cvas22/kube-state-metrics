@@ -151,7 +151,7 @@ func TestVariableVKsDiscoveryAndResolution(t *testing.T) {
 	defer rm.removeResourceFiles(t)
 
 	// Populate options, and parse them.
-	opts.CustomResourceConfigFile = rm.crConfigFile.Name()
+	opts.CustomResourceConfigFile = options.FileList{rm.crConfigFile.Name()}
 	opts.Kubeconfig = os.Getenv("HOME") + "/.kube/config"
 	if err := opts.Parse(); err != nil {
 		t.Fatalf("failed to parse options: %v", err)
